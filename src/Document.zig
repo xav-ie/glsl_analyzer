@@ -9,7 +9,7 @@ workspace: *Workspace,
 uri: []const u8,
 path: []const u8,
 
-version: ?i64,
+version: ?i32,
 
 /// The raw bytes of the file (utf-8)
 contents: std.ArrayListUnmanaged(u8) = .{},
@@ -152,25 +152,25 @@ pub const CompleteParseTree = struct {
         var arena = std.heap.ArenaAllocator.init(parent_allocator);
         errdefer arena.deinit();
 
-        var diagnostics = std.ArrayList(parse.Diagnostic).init(arena.allocator());
+        var diagnostics: std.ArrayList(parse.Diagnostic) = .{};
 
-        var ignored = std.ArrayList(parse.Token).init(parent_allocator);
-        defer ignored.deinit();
+        var ignored: std.ArrayList(parse.Token) = .{};
+        defer ignored.deinit(parent_allocator);
 
         const tree = try parse.parse(arena.allocator(), text, .{
             .ignored = &ignored,
             .diagnostics = &diagnostics,
         });
 
-        var extensions = std.ArrayList([]const u8).init(arena.allocator());
-        errdefer extensions.deinit();
+        var extensions: std.ArrayList([]const u8) = .{};
+        errdefer extensions.deinit(arena.allocator());
 
         for (ignored.items) |token| {
             const line = text[token.start..token.end];
             switch (parse.parsePreprocessorDirective(line) orelse continue) {
                 .extension => |extension| {
                     const name = extension.name;
-                    try extensions.append(line[name.start..name.end]);
+                    try extensions.append(arena.allocator(), line[name.start..name.end]);
                 },
                 else => continue,
             }

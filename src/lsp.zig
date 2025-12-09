@@ -42,7 +42,7 @@ pub const TextDocumentSyncKind = enum(u8) {
 pub const TextDocumentItem = struct {
     uri: []const u8,
     languageId: []const u8,
-    version: i64,
+    version: ?i32,
     text: []const u8,
 
     pub fn versioned(self: @This()) VersionedTextDocumentIdentifier {
@@ -56,7 +56,7 @@ pub const TextDocumentIdentifier = struct {
 
 pub const VersionedTextDocumentIdentifier = struct {
     uri: []const u8,
-    version: i64,
+    version: ?i32,
 };
 
 pub const TextDocumentContentChangeEvent = struct {

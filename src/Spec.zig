@@ -56,10 +56,39 @@ pub const Function = struct {
 const compressed_bytes = @embedFile("glsl_spec.json.zlib");
 
 pub fn load(allocator: std.mem.Allocator) !@This() {
-    var compressed_stream = std.io.fixedBufferStream(compressed_bytes);
-    var decompress_stream = std.compress.zlib.decompressor(compressed_stream.reader());
+    // Decompress using external gzip command
+    var child = std.process.Child.init(&[_][]const u8{ "gzip", "-dc" }, allocator);
+    child.stdin_behavior = .Pipe;
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Pipe;
 
-    const bytes = try decompress_stream.reader().readAllAlloc(allocator, 16 << 20);
+    try child.spawn();
+
+    // Write compressed data to stdin
+    try child.stdin.?.writeAll(compressed_bytes);
+    child.stdin.?.close();
+    child.stdin = null;
+
+    // Read decompressed output
+    const bytes = try child.stdout.?.readToEndAlloc(allocator, 16 << 20);
+    errdefer allocator.free(bytes);
+
+    const stderr = try child.stderr.?.readToEndAlloc(allocator, 16 << 20);
+    defer allocator.free(stderr);
+
+    const term = try child.wait();
+    switch (term) {
+        .Exited => |code| {
+            if (code != 0) {
+                std.log.err("gzip decompression failed with exit code {d}: {s}", .{ code, stderr });
+                return error.DecompressionFailed;
+            }
+        },
+        else => {
+            std.log.err("gzip decompression terminated abnormally", .{});
+            return error.DecompressionFailed;
+        },
+    }
 
     var diagnostic = std.json.Diagnostics{};
     var scanner = std.json.Scanner.initCompleteInput(allocator, bytes);
@@ -71,7 +100,7 @@ pub fn load(allocator: std.mem.Allocator) !@This() {
             "could not parse GLSL spec: {}:{}: {s}",
             .{ diagnostic.getLine(), diagnostic.getColumn(), @errorName(err) },
         );
-        std.log.err("{?s}", .{util.getJsonErrorContext(diagnostic, bytes)});
+        std.log.err("{s}", .{util.getJsonErrorContext(diagnostic, bytes)});
         return err;
     };
 }

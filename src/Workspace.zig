@@ -117,14 +117,14 @@ pub fn getOrLoadDocument(
 }
 
 fn builtinCompletions(arena: std.mem.Allocator, spec: *const Spec) ![]lsp.CompletionItem {
-    var completions = std.ArrayList(lsp.CompletionItem).init(arena);
+    var completions: std.ArrayList(lsp.CompletionItem) = .{};
 
-    try completions.ensureUnusedCapacity(
+    try completions.ensureUnusedCapacity(arena,
         spec.types.len + spec.variables.len + spec.functions.len,
     );
 
     for (spec.types) |typ| {
-        try completions.append(.{
+        try completions.append(arena, .{
             .label = typ.name,
             .kind = .class,
             .documentation = .{
@@ -141,7 +141,7 @@ fn builtinCompletions(arena: std.mem.Allocator, spec: *const Spec) ![]lsp.Comple
             }
         }
 
-        try completions.append(.{
+        try completions.append(arena, .{
             .label = keyword.name,
             .kind = .keyword,
             .documentation = .{
@@ -156,13 +156,13 @@ fn builtinCompletions(arena: std.mem.Allocator, spec: *const Spec) ![]lsp.Comple
     }
 
     for (spec.variables) |variable| {
-        var anonymous_signature = std.ArrayList(u8).init(arena);
-        try writeVariableSignature(variable, anonymous_signature.writer(), .{ .names = false });
+        var anonymous_signature: std.ArrayList(u8) = .{};
+        try writeVariableSignature(variable, anonymous_signature.writer(arena), .{ .names = false });
 
-        var named_signature = std.ArrayList(u8).init(arena);
-        try writeVariableSignature(variable, named_signature.writer(), .{ .names = true });
+        var named_signature: std.ArrayList(u8) = .{};
+        try writeVariableSignature(variable, named_signature.writer(arena), .{ .names = true });
 
-        try completions.append(.{
+        try completions.append(arena, .{
             .label = variable.name,
             .labelDetails = .{ .detail = anonymous_signature.items },
             .detail = named_signature.items,
@@ -172,13 +172,13 @@ fn builtinCompletions(arena: std.mem.Allocator, spec: *const Spec) ![]lsp.Comple
     }
 
     for (spec.functions) |function| {
-        var anonymous_signature = std.ArrayList(u8).init(arena);
-        try writeFunctionSignature(function, anonymous_signature.writer(), .{ .names = false });
+        var anonymous_signature: std.ArrayList(u8) = .{};
+        try writeFunctionSignature(function, anonymous_signature.writer(arena), .{ .names = false });
 
-        var named_signature = std.ArrayList(u8).init(arena);
-        try writeFunctionSignature(function, named_signature.writer(), .{ .names = true });
+        var named_signature: std.ArrayList(u8) = .{};
+        try writeFunctionSignature(function, named_signature.writer(arena), .{ .names = true });
 
-        try completions.append(.{
+        try completions.append(arena, .{
             .label = function.name,
             .labelDetails = .{ .detail = anonymous_signature.items },
             .kind = .function,
@@ -187,26 +187,26 @@ fn builtinCompletions(arena: std.mem.Allocator, spec: *const Spec) ![]lsp.Comple
         });
     }
 
-    return completions.toOwnedSlice();
+    return completions.toOwnedSlice(arena);
 }
 
 fn itemDocumentation(arena: std.mem.Allocator, item: anytype) !lsp.MarkupContent {
-    var documentation = std.ArrayList(u8).init(arena);
+    var documentation: std.ArrayList(u8) = .{};
 
     for (item.description orelse &.{}) |paragraph| {
-        try documentation.appendSlice(paragraph);
-        try documentation.appendSlice("\n\n");
+        try documentation.appendSlice(arena, paragraph);
+        try documentation.appendSlice(arena, "\n\n");
     }
 
     if (item.extensions) |extensions| {
-        try documentation.appendSlice("```glsl\n");
+        try documentation.appendSlice(arena, "```glsl\n");
         for (extensions) |extension| {
-            try documentation.writer().print("#extension {s} : enable\n", .{extension});
+            try documentation.writer(arena).print("#extension {s} : enable\n", .{extension});
         }
-        try documentation.appendSlice("```\n");
+        try documentation.appendSlice(arena, "```\n");
     }
 
-    return .{ .kind = .markdown, .value = try documentation.toOwnedSlice() };
+    return .{ .kind = .markdown, .value = try documentation.toOwnedSlice(arena) };
 }
 
 fn writeVariableSignature(
@@ -215,7 +215,7 @@ fn writeVariableSignature(
     options: struct { names: bool },
 ) !void {
     if (!std.meta.eql(variable.modifiers, .{ .in = true })) {
-        try writer.print("{}", .{variable.modifiers});
+        try writer.print("{any}", .{variable.modifiers});
         try writer.writeAll(" ");
     }
 
@@ -247,7 +247,7 @@ fn writeFunctionSignature(
         if (i != 0) try writer.writeAll(", ");
         if (param.optional) try writer.writeAll("[");
         if (param.modifiers) |modifiers| {
-            try writer.print("{}", .{modifiers});
+            try writer.print("{any}", .{modifiers});
             try writer.writeAll(" ");
         }
         if (options.names) {

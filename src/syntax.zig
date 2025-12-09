@@ -271,11 +271,11 @@ pub fn Extractor(comptime expected_tag: Tag, comptime T: type) type {
             return tree.children(self.node).start + node_offset;
         }
 
-        pub fn get(self: @This(), comptime field: FieldEnum, tree: Tree) ?std.meta.FieldType(T, field) {
+        pub fn get(self: @This(), comptime field: FieldEnum, tree: Tree) ?@FieldType(T, @tagName(field)) {
             const field_match = @field(self.matches, @tagName(field));
             const node_offset = field_match.node_offset orelse return null;
             const node = tree.children(self.node).start + node_offset;
-            return MixinType(std.meta.FieldType(T, field)).extract(tree, node, field_match.result);
+            return MixinType(@FieldType(T, @tagName(field))).extract(tree, node, field_match.result);
         }
     };
 }
@@ -386,7 +386,7 @@ pub fn UnionExtractorMixin(comptime Self: type) type {
                         match_field.* = .{
                             .name = field.name,
                             .type = MatchResult(field.type),
-                            .alignment = 0,
+                            .alignment = @alignOf(MatchResult(field.type)),
                         };
                     }
 

@@ -28,13 +28,13 @@ pub fn getJsonErrorContext(diagnostics: std.json.Diagnostics, bytes: []const u8)
 
 pub fn normalizePath(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     var buffer = try std.ArrayList(u8).initCapacity(allocator, path.len);
-    errdefer buffer.deinit();
+    errdefer buffer.deinit(allocator);
 
     var components = try std.fs.path.componentIterator(path);
 
     if (components.root()) |root| {
-        try buffer.appendSlice(root);
-        if (!lastIsSep(buffer.items)) try buffer.append('/');
+        try buffer.appendSlice(allocator, root);
+        if (!lastIsSep(buffer.items)) try buffer.append(allocator, '/');
     }
 
     while (components.next()) |component| {
@@ -45,12 +45,12 @@ pub fn normalizePath(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
         } else if (std.mem.eql(u8, component.name, ".")) {
             continue;
         } else {
-            if (buffer.items.len != 0 and !lastIsSep(buffer.items)) try buffer.append('/');
-            try buffer.appendSlice(component.name);
+            if (buffer.items.len != 0 and !lastIsSep(buffer.items)) try buffer.append(allocator, '/');
+            try buffer.appendSlice(allocator, component.name);
         }
     }
 
-    return buffer.toOwnedSlice();
+    return buffer.toOwnedSlice(allocator);
 }
 
 fn lastIsSep(path: []const u8) bool {

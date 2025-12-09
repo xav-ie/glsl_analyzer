@@ -9,7 +9,9 @@ pub const Arguments = struct {
     dev_mode: ?[]const u8 = null,
     parse_file: ?[]const u8 = null,
     print_ast: bool = false,
-    format_file: ?[]const u8 = null,
+    format_files: std.ArrayList([]const u8),
+    tab_size: u32 = 4,
+    allocator: std.mem.Allocator,
 
     pub const ChannelKind = union(enum) {
         stdio: void,
@@ -28,7 +30,8 @@ pub const Arguments = struct {
         \\     --stdio              Communicate over stdio. [default]
         \\ -p, --port <PORT>        Communicate over socket.
         \\     --dev-mode <PATH>    Enable development mode: redirects stderr to the given path.
-        \\     --format <PATH>      Print formatted file and exit.
+        \\     --format <PATH>...   Format one or more files and exit.
+        \\     --tab-size <N>       Number of spaces per indentation level (default: 4).
         \\     --parse-file <PATH>  Parses the given file, prints diagnostics, then exits.
         \\     --print-ast          Prints the parse tree. Only valid with --parse-file.
         \\
@@ -36,17 +39,26 @@ pub const Arguments = struct {
         ;
 
     fn printHelp() noreturn {
-        std.io.getStdOut().writer().writeAll(usage) catch {};
+        var stdout_buffer: [4096]u8 = undefined;
+        var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+        stdout_writer.interface.writeAll(usage) catch {};
+        stdout_writer.interface.flush() catch {};
         std.process.exit(1);
     }
 
     fn printVersion() noreturn {
-        std.io.getStdOut().writer().writeAll(@import("build_options").version) catch {};
+        var stdout_buffer: [4096]u8 = undefined;
+        var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+        stdout_writer.interface.writeAll(@import("build_options").version) catch {};
+        stdout_writer.interface.flush() catch {};
         std.process.exit(0);
     }
 
     fn fail(comptime fmt: []const u8, args: anytype) noreturn {
-        std.io.getStdErr().writer().writeAll(usage) catch {};
+        var stderr_buffer: [4096]u8 = undefined;
+        var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+        stderr_writer.interface.writeAll(usage) catch {};
+        stderr_writer.interface.flush() catch {};
         std.log.err(fmt ++ "\n", args);
         std.process.exit(1);
     }
@@ -63,10 +75,17 @@ pub const Arguments = struct {
         }
     };
 
-    pub fn parse(args: *std.process.ArgIterator) !Arguments {
+    pub fn deinit(self: *Arguments) void {
+        self.format_files.deinit(self.allocator);
+    }
+
+    pub fn parse(args: *std.process.ArgIterator, allocator: std.mem.Allocator) !Arguments {
         _ = args.skip();
 
-        var parsed = Arguments{};
+        var parsed = Arguments{
+            .format_files = .{},
+            .allocator = allocator,
+        };
 
         while (args.next()) |arg| {
             const option_end = std.mem.indexOfScalar(u8, arg, '=') orelse arg.len;
@@ -122,8 +141,29 @@ pub const Arguments = struct {
                 continue;
             }
 
+            if (isAny(option, &.{"--tab-size"})) {
+                const value = value_parser.get("N");
+                parsed.tab_size = std.fmt.parseInt(u32, value, 10) catch
+                    fail("{s}: not a valid number: {s}", .{ option, value });
+                continue;
+            }
+
             if (isAny(option, &.{"--format"})) {
-                parsed.format_file = value_parser.get("PATH");
+                // Get the first file path
+                const first_path = value_parser.get("PATH");
+                try parsed.format_files.append(allocator, first_path);
+
+                // Collect all remaining non-option arguments as file paths
+                while (args.next()) |next_arg| {
+                    if (next_arg.len > 0 and next_arg[0] == '-') {
+                        // This is an option, not a file path
+                        // We need to "put it back" by not consuming it
+                        // Unfortunately ArgIterator doesn't support this,
+                        // so we'll just break and let the outer loop handle it
+                        fail("--format must be the last option when formatting multiple files", .{});
+                    }
+                    try parsed.format_files.append(allocator, next_arg);
+                }
                 continue;
             }
 

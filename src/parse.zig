@@ -290,7 +290,7 @@ pub const Tree = struct {
         }
     }
 
-    pub fn format(tree: @This(), source: []const u8) std.fmt.Formatter(formatWithSource) {
+    pub fn format(tree: @This(), source: []const u8) std.fmt.Alt(WithSource, formatWithSource) {
         return .{ .data = .{
             .tree = tree,
             .source = source,
@@ -304,21 +304,13 @@ pub const Tree = struct {
 
     fn formatWithSource(
         data: WithSource,
-        comptime fmt: []const u8,
-        _: anytype,
-        writer: anytype,
-    ) !void {
-        comptime var with_spans = false;
-
-        if (comptime std.mem.eql(u8, fmt, "..")) {
-            with_spans = true;
-        } else if (fmt.len != 0) {
-            @compileError("expected `{}` or `{..}`");
-        }
+        writer: *std.Io.Writer,
+    ) std.Io.Writer.Error!void {
+        const with_spans = false;
 
         const Formatter = struct {
             tree: Tree,
-            writer: @TypeOf(writer),
+            writer: *std.Io.Writer,
             source: []const u8,
             indent: usize = 0,
 
@@ -328,13 +320,13 @@ pub const Tree = struct {
                 const node = self.tree.nodes.get(index);
                 const name = @tagName(node.tag);
 
-                try self.writer.writeByteNTimes(' ', indent);
+                try self.writer.splatByteAll(' ', indent);
 
                 if (node.getToken()) |tok| {
                     const text = self.source[tok.start..tok.end];
                     if (std.ascii.isAlphabetic(name[0])) {
                         try self.writer.writeAll(name);
-                        try self.writer.print(" '{'}'", .{std.zig.fmtEscapes(text)});
+                        try self.writer.print(" '{f}'", .{std.zig.fmtString(text)});
                     } else {
                         try self.writer.writeAll(name);
                     }
@@ -463,7 +455,7 @@ pub const Parser = struct {
             switch (token.tag) {
                 .comment, .preprocessor => {
                     if (self.options.ignored) |ignored| {
-                        self.deferError(ignored.append(token.getToken().?));
+                        self.deferError(ignored.append(self.allocator, token.getToken().?));
                     }
                 },
                 else => {
@@ -508,7 +500,7 @@ pub const Parser = struct {
 
     fn emitDiagnostic(self: *@This(), diagnostic: Diagnostic) void {
         if (self.options.diagnostics) |diagnostics| {
-            self.deferError(diagnostics.append(diagnostic));
+            self.deferError(diagnostics.append(self.allocator, diagnostic));
         }
     }
 
@@ -1580,7 +1572,8 @@ pub const Tokenizer = struct {
 
             const tags = std.meta.tags(Tag);
 
-            var table = std.BoundedArray(struct { []const u8, Tag }, tags.len){};
+            var buffer: [tags.len]struct { []const u8, Tag } = undefined;
+            var table = std.ArrayListUnmanaged(struct { []const u8, Tag }).initBuffer(&buffer);
 
             for (tags) |tag| {
                 if (stripPrefix(@tagName(tag), "keyword_")) |name| {
@@ -1588,7 +1581,7 @@ pub const Tokenizer = struct {
                 }
             }
 
-            break :blk std.StaticStringMap(Tag).initComptime(table.slice());
+            break :blk std.StaticStringMap(Tag).initComptime(table.items);
         };
 
         return map.get(identifier) orelse .identifier;
@@ -1924,7 +1917,7 @@ fn expectParsesOkay(source: []const u8) !void {
     defer tree.deinit(std.testing.allocator);
 
     errdefer std.debug.print("======== source ========\n{s}\n========================\n", .{source});
-    errdefer std.log.err("tree:\n{}", .{tree.format(source)});
+    errdefer std.log.err("tree:\n{f}", .{tree.format(source)});
 
     if (diagnostics.items.len != 0) {
         for (diagnostics.items) |diagnostic| {

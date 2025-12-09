@@ -157,7 +157,11 @@ fn Writer(comptime ChildWriter: type) type {
         }
 
         pub fn emitIndent(self: *Self) !void {
-            try self.child_writer.writeByteNTimes(' ', self.indentation * self.tab_size);
+            const spaces_to_write = self.indentation * self.tab_size;
+            var i: usize = 0;
+            while (i < spaces_to_write) : (i += 1) {
+                try self.child_writer.writeByte(' ');
+            }
             if (self.indentation > 0) self.preceded_by_space = true;
         }
 

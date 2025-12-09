@@ -35,7 +35,9 @@ pub const Type = struct {
     arrays: ?syntax.ListIterator(syntax.Array) = null,
     parameters: ?syntax.ParameterList = null,
 
-    pub fn format(self: @This(), tree: Tree, source: []const u8) std.fmt.Formatter(formatType) {
+    const FormatData = struct { tree: Tree, source: []const u8, type: Type };
+
+    pub fn format(self: @This(), tree: Tree, source: []const u8) std.fmt.Alt(FormatData, formatType) {
         return .{ .data = .{ .tree = tree, .source = source, .type = self } };
     }
 
@@ -44,11 +46,9 @@ pub const Type = struct {
     }
 
     fn formatType(
-        data: struct { tree: Tree, source: []const u8, type: Type },
-        _: anytype,
-        _: anytype,
-        writer: anytype,
-    ) !void {
+        data: FormatData,
+        writer: *std.Io.Writer,
+    ) std.Io.Writer.Error!void {
         const prettify = @import("format.zig").format;
 
         var first = true;
@@ -80,7 +80,7 @@ pub const Type = struct {
             while (iterator.next(data.tree)) |parameter| : (i += 1) {
                 const parameter_type = parameterType(parameter, data.tree);
                 if (i != 0) try writer.writeAll(", ");
-                try writer.print("{}", .{parameter_type.format(data.tree, data.source)});
+                try writer.print("{f}", .{parameter_type.format(data.tree, data.source)});
             }
             try writer.writeAll(")");
         }
@@ -168,8 +168,8 @@ fn expectTypeFormat(source: []const u8, types: []const []const u8) !void {
     if (cursors.count() != types.len) return error.InvalidCursorCount;
 
     for (types, cursors.values()) |expected, cursor| {
-        var references = std.ArrayList(Reference).init(allocator);
-        defer references.deinit();
+        var references: std.ArrayList(Reference) = .{};
+        defer references.deinit(allocator);
 
         try findDefinition(allocator, document, cursor.node, &references);
         if (references.items.len != 1) return error.InvalidReference;
@@ -177,7 +177,7 @@ fn expectTypeFormat(source: []const u8, types: []const []const u8) !void {
 
         const typ = try typeOf(ref) orelse return error.InvalidType;
 
-        const found = try std.fmt.allocPrint(allocator, "{}", .{typ.format(tree, document.source())});
+        const found = try std.fmt.allocPrint(allocator, "{f}", .{typ.format(tree, document.source())});
         defer allocator.free(found);
 
         try std.testing.expectEqualStrings(expected, found);
@@ -196,8 +196,8 @@ pub fn findDefinition(
 
     const name = nodeName(tree, node, document.source()) orelse return;
 
-    var symbols = std.ArrayList(Reference).init(arena);
-    defer symbols.deinit();
+    var symbols: std.ArrayList(Reference) = .{};
+    defer symbols.deinit(arena);
 
     try visibleFields(arena, document, node, &symbols);
     if (symbols.items.len == 0) {
@@ -206,7 +206,7 @@ pub fn findDefinition(
 
     for (symbols.items) |symbol| {
         if (std.mem.eql(u8, name, symbol.name())) {
-            try references.append(symbol);
+            try references.append(arena, symbol);
             const parsed = try symbol.document.parseTree();
             if (!inFileRoot(parsed.tree, symbol.parent_declaration)) break;
         }
@@ -253,15 +253,15 @@ pub fn visibleFields(
         return;
     }
 
-    var name_definitions = std.ArrayList(Reference).init(arena);
+    var name_definitions: std.ArrayList(Reference) = .{};
     try findDefinition(arena, document, lhs, &name_definitions);
 
-    var references = std.ArrayList(Reference).init(document.workspace.allocator);
-    defer references.deinit();
+    var references: std.ArrayList(Reference) = .{};
+    defer references.deinit(document.workspace.allocator);
 
     for (name_definitions.items) |name_definition| {
         references.clearRetainingCapacity();
-        try references.append(name_definition);
+        try references.append(document.workspace.allocator, name_definition);
 
         var remaining_iterations: u32 = 16;
 
@@ -300,7 +300,7 @@ pub fn visibleFields(
                 while (variable_iterator.next(tree)) |variable| {
                     const variable_name = variable.get(.name, tree) orelse continue;
                     const variable_identifier = variable_name.getIdentifier(tree) orelse continue;
-                    try symbols.append(.{
+                    try symbols.append(arena, .{
                         .document = reference.document,
                         .node = variable_identifier.node,
                         .parent_declaration = field.node,
@@ -381,7 +381,7 @@ pub const Scope = struct {
         var arena = std.heap.ArenaAllocator.init(options.duplicate_allocator);
         defer arena.deinit();
 
-        try symbols.ensureUnusedCapacity(self.symbols.count());
+        try symbols.ensureUnusedCapacity(options.duplicate_allocator, self.symbols.count());
         for (self.symbols.values()) |*value| {
             defer functions.clearRetainingCapacity();
             defer _ = arena.reset(.retain_capacity);
@@ -403,7 +403,7 @@ pub const Scope = struct {
                     if (result.found_existing) continue;
                 }
 
-                try symbols.append(symbol.reference);
+                try symbols.append(options.duplicate_allocator, symbol.reference);
 
                 // only symbols in global scope can be overloaded
                 if (symbol.scope != 0) break;
@@ -420,22 +420,22 @@ pub const Scope = struct {
         const func = syntax.ExtractorMixin(syntax.FunctionDeclaration).tryExtract(tree, decl_node) orelse return null;
         const parameters = func.get(.parameters, tree) orelse return null;
 
-        var signature = std.ArrayList(u8).init(allocator);
-        errdefer signature.deinit();
+        var signature: std.ArrayList(u8) = .{};
+        errdefer signature.deinit(allocator);
 
-        try signature.appendSlice("(");
+        try signature.appendSlice(allocator, "(");
 
         var i: usize = 0;
         var iterator = parameters.iterator();
         while (iterator.next(tree)) |parameter| : (i += 1) {
-            if (i != 0) try signature.appendSlice(", ");
+            if (i != 0) try signature.appendSlice(allocator, ", ");
             const typ = parameterType(parameter, tree);
-            try signature.writer().print("{}", .{typ.format(tree, document.source())});
+            try signature.writer(allocator).print("{f}", .{typ.format(tree, document.source())});
         }
 
-        try signature.appendSlice(")");
+        try signature.appendSlice(allocator, ")");
 
-        return try signature.toOwnedSlice();
+        return try signature.toOwnedSlice(allocator);
     }
 };
 
@@ -453,9 +453,9 @@ pub fn visibleSymbols(
     // collect global symbols:
     {
         var documents = try std.ArrayList(*Document).initCapacity(arena, 8);
-        defer documents.deinit();
+        defer documents.deinit(arena);
 
-        try documents.append(start_document);
+        try documents.append(arena, start_document);
         try findIncludedDocumentsRecursive(arena, &documents);
 
         var documents_reverse = std.mem.reverseIterator(documents.items);
@@ -702,8 +702,8 @@ fn findIncludedDocuments(
                 defer arena.free(uri);
 
                 const included_document = start.workspace.getOrLoadDocument(.{ .uri = uri }) catch |err| {
-                    std.log.err("could not open '{'}': {s}", .{
-                        std.zig.fmtEscapes(uri),
+                    std.log.err("could not open '{f}': {s}", .{
+                        std.zig.fmtString(uri),
                         @errorName(err),
                     });
                     continue;
@@ -715,7 +715,7 @@ fn findIncludedDocuments(
                         break;
                     }
                 } else {
-                    try documents.append(included_document);
+                    try documents.append(arena, included_document);
                 }
             },
             else => continue,
@@ -941,8 +941,8 @@ fn expectDefinition(
         const usage = cursors.get(case.source) orelse std.debug.panic("invalid cursor: {s}", .{case.source});
         const definition = cursors.get(case.target) orelse std.debug.panic("invalid cursor: {s}", .{case.source});
 
-        var references = std.ArrayList(Reference).init(workspace.allocator);
-        defer references.deinit();
+        var references: std.ArrayList(Reference) = .{};
+        defer references.deinit(workspace.allocator);
         try findDefinition(arena.allocator(), document, usage.node, &references);
 
         var found_definition = false;
@@ -991,8 +991,8 @@ fn findCursors(document: *Document) !std.StringArrayHashMap(Cursor) {
                 break;
             }
         } else {
-            std.debug.panic("cursor not found: \"{}\"", .{
-                std.zig.fmtEscapes(document.source()[cursor.start..cursor.end]),
+            std.debug.panic("cursor not found: \"{f}\"", .{
+                std.zig.fmtString(document.source()[cursor.start..cursor.end]),
             });
         }
     }

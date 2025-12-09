@@ -24,9 +24,11 @@ pub fn build(b: *std.Build) !void {
     {
         const unit_tests = b.addTest(.{
             .name = "unit-tests",
-            .root_source_file = b.path("src/main.zig"),
-            .target = target,
-            .optimize = optimize,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/main.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
         });
         try attachModules(unit_tests);
 
@@ -75,9 +77,11 @@ fn addExecutable(b: *std.Build, options: struct {
 }) !*std.Build.Step.Compile {
     const exe = b.addExecutable(.{
         .name = "glsl_analyzer",
-        .root_source_file = b.path("src/main.zig"),
-        .target = options.target,
-        .optimize = options.optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = options.target,
+            .optimize = options.optimize,
+        }),
     });
     try attachModules(exe);
     return exe;
@@ -141,27 +145,64 @@ const CompressStep = struct {
 
         const digest = man.final();
 
+        // Build path for external use (full path)
         const output_path = try b.cache_root.join(b.allocator, &.{ "o", &digest, step.name });
         self.generated_file.path = output_path;
 
-        if (is_hit) return;
+        // Build relative path for cache_root.handle operations
+        const relative_path = try std.fs.path.join(b.allocator, &.{ "o", &digest, step.name });
+        defer b.allocator.free(relative_path);
+
+        if (is_hit) {
+            std.log.info("CompressStep: cache hit, skipping", .{});
+            return;
+        }
 
         const input_contents = man.files.keys()[input_index].contents.?;
 
-        if (std.fs.path.dirname(output_path)) |dir| try b.cache_root.handle.makePath(dir);
-        var output_file = b.cache_root.handle.createFile(output_path, .{}) catch |err| {
-            std.log.err("could not open {s}: {s}", .{ output_path, @errorName(err) });
+        if (std.fs.path.dirname(relative_path)) |dir| try b.cache_root.handle.makePath(dir);
+
+        // Use external gzip command to compress with manual stdin piping
+        var child = std.process.Child.init(&[_][]const u8{ "gzip", "-c" }, b.allocator);
+        child.stdin_behavior = .Pipe;
+        child.stdout_behavior = .Pipe;
+        child.stderr_behavior = .Pipe;
+
+        try child.spawn();
+
+        // Write input to stdin
+        try child.stdin.?.writeAll(input_contents);
+        child.stdin.?.close();
+        child.stdin = null;
+
+        // Collect output
+        const stdout = try child.stdout.?.readToEndAlloc(b.allocator, 16 << 20);
+        defer b.allocator.free(stdout);
+        const stderr = try child.stderr.?.readToEndAlloc(b.allocator, 16 << 20);
+        defer b.allocator.free(stderr);
+
+        const term = try child.wait();
+        switch (term) {
+            .Exited => |code| {
+                if (code != 0) {
+                    std.log.err("gzip failed with exit code {d}: {s}", .{ code, stderr });
+                    return error.CompressionFailed;
+                }
+            },
+            else => {
+                std.log.err("gzip terminated abnormally", .{});
+                return error.CompressionFailed;
+            },
+        }
+
+        // Write compressed output to file
+        var output_file = b.cache_root.handle.createFile(relative_path, .{}) catch |err| {
+            std.log.err("could not create {s}: {s}", .{ relative_path, @errorName(err) });
             return err;
         };
         defer output_file.close();
 
-        var output_buffered = std.io.bufferedWriter(output_file.writer());
-        {
-            var compress_stream = try std.compress.zlib.compressor(output_buffered.writer(), .{});
-            try compress_stream.writer().writeAll(input_contents);
-            try compress_stream.finish();
-        }
-        try output_buffered.flush();
+        try output_file.writeAll(stdout);
 
         try step.writeManifest(&man);
     }
